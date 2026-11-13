@@ -34,7 +34,7 @@ jobs:
           chmod +x bore
           xattr -d com.apple.quarantine bore 2>/dev/null || true
 
-      # 2. 下载、配置并启动 VirtualDisplay
+      # 2. 下载、配置并启动 VirtualDisplay (修正了下载链接)
       - name: Setup VirtualDisplay
         run: |
           set -e
@@ -42,11 +42,23 @@ jobs:
                     | python3 -c "import sys,json;print(json.load(sys.stdin)['tag_name'])")
           echo "获取到 VirtualDisplay 版本: $VERSION"
           
-          DOWNLOAD_URL="https://github.com/youngyunxing/VirtualDisplay/releases/download/${VERSION}/VirtualDisplay.zip"
+          # 使用带版本号的真实文件名格式
+          DOWNLOAD_URL="https://github.com/youngyunxing/VirtualDisplay/releases/download/${VERSION}/VirtualDisplay-${VERSION}.zip"
+          echo "下载地址: $DOWNLOAD_URL"
+          
           curl -L -o VirtualDisplay.zip "$DOWNLOAD_URL"
+          
+          # 校验文件大小
+          FILE_SIZE=$(stat -f%z VirtualDisplay.zip)
+          echo "下载的文件大小: $FILE_SIZE 字节"
+          if [ "$FILE_SIZE" -lt 1000000 ]; then
+            echo "❌ 下载失败，文件太小，可能是不存在的页面"
+            exit 1
+          fi
+          
           unzip -o VirtualDisplay.zip
           
-          # 移动到应用程序并移除隔离 (按文档说明)
+          # 移动到应用程序并移除隔离
           mv VirtualDisplay.app /Applications/
           xattr -dr com.apple.quarantine /Applications/VirtualDisplay.app
           
@@ -120,7 +132,7 @@ jobs:
           echo " ⚠️ 建议客户端选 1920x1080 HiDPI 以获得清晰画质"
           echo "======================================================"
 
-      # 5. 保持任务运行，直到超时或手动取消
+      # 5. 保持任务运行
       - name: Keep alive
         run: |
           echo "任务运行中... 请手动取消或等待超时。"
