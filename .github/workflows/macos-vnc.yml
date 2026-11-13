@@ -17,7 +17,7 @@ jobs:
           sw_vers
           uname -m
 
-      # 1. 安装 bore 隧道工具
+      # 1. 安装 bore 隧道工具 (硬编码版本，避免 API 限流)
       - name: Install bore
         run: |
           set -e
@@ -26,26 +26,26 @@ jobs:
             x86_64)        ARCH=x86_64-apple-darwin ;;
             *) echo "未知架构: $(uname -m)"; exit 1 ;;
           esac
-          VERSION=$(curl -s https://api.github.com/repos/ekzhang/bore/releases/latest \
-                    | python3 -c "import sys,json;print(json.load(sys.stdin)['tag_name'])")
+          
+          # 使用固定版本号 v0.5.0
+          VERSION="v0.5.0"
+          echo "下载 bore $VERSION ($ARCH)"
           curl -L -o bore.tar.gz \
             "https://github.com/ekzhang/bore/releases/download/${VERSION}/bore-${VERSION}-${ARCH}.tar.gz"
+          
           tar xzf bore.tar.gz
           chmod +x bore
           xattr -d com.apple.quarantine bore 2>/dev/null || true
 
-      # 2. 下载、配置并启动 VirtualDisplay (修正了下载链接)
+      # 2. 下载、配置并启动 VirtualDisplay (直接使用正确的链接)
       - name: Setup VirtualDisplay
         run: |
           set -e
-          VERSION=$(curl -s https://api.github.com/repos/youngyunxing/VirtualDisplay/releases/latest \
-                    | python3 -c "import sys,json;print(json.load(sys.stdin)['tag_name'])")
-          echo "获取到 VirtualDisplay 版本: $VERSION"
-          
-          # 使用带版本号的真实文件名格式
+          # 使用你提供的真实链接格式，写死 v5.2.0
+          VERSION="v5.2.0"
           DOWNLOAD_URL="https://github.com/youngyunxing/VirtualDisplay/releases/download/${VERSION}/VirtualDisplay-${VERSION}.zip"
-          echo "下载地址: $DOWNLOAD_URL"
           
+          echo "下载地址: $DOWNLOAD_URL"
           curl -L -o VirtualDisplay.zip "$DOWNLOAD_URL"
           
           # 校验文件大小
@@ -97,13 +97,12 @@ jobs:
           
           echo "原生 VNC 已成功启动！监听在 5900 端口"
 
-      # 4. 启动 bore 隧道并输出公网地址
+      # 4. 启动 bore 隧道并输出公网地址 (修复了 set -e 导致的提前退出)
       - name: Start bore tunnel
         env:
           BORE_SERVER: ${{ secrets.BORE_SERVER }}
           BORE_SECRET: ${{ secrets.BORE_SECRET }}
         run: |
-          # 启动 bore 隧道
           if [ -n "$BORE_SERVER" ]; then
             nohup ./bore local 5900 --to "$BORE_SERVER" --secret "$BORE_SECRET" > bore.log 2>&1 &
           else
@@ -117,7 +116,7 @@ jobs:
               PORT=$(grep -oE 'listening at [^ ]*:[0-9]+' bore.log | head -1 | grep -oE '[0-9]+$')
             fi
             
-            # 使用 if 语句代替 && 避免 set -e 导致脚本提前退出
+            # 使用 if 语句，防止 set -e 导致脚本异常退出
             if [ -n "$PORT" ]; then
               break
             fi
@@ -140,7 +139,6 @@ jobs:
           echo " ⚠️ 建议客户端选 1920x1080 HiDPI 以获得清晰画质"
           echo "======================================================"
 
-          
       # 5. 保持任务运行
       - name: Keep alive
         run: |
