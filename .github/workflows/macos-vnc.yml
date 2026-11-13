@@ -1,4 +1,4 @@
-name: macOS VNC
+name: macOS Native VNC
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ jobs:
           sw_vers
           uname -m
 
-      # 1. 安装 bore
+      # 1. 安装 bore 隧道工具
       - name: Install bore
         run: |
           set -e
@@ -34,59 +34,58 @@ jobs:
           chmod +x bore
           xattr -d com.apple.quarantine bore 2>/dev/null || true
 
-      # 2. 动态获取真实链接下载 Vinegar (修复 404 问题)
-      - name: Download Vinegar
+      # 2. 下载、配置并启动 VirtualDisplay
+      - name: Setup VirtualDisplay
         run: |
           set -e
-          # 通过 GitHub API 动态抓取最新的 macOS 下载链接
-          API_URL="https://api.github.com/repos/1fexd/vinegar/releases/latest"
-          DOWNLOAD_URL=$(curl -s $API_URL | grep browser_download_url | grep -i "macos.*\.zip" | head -n 1 | cut -d '"' -f 4)
+          VERSION=$(curl -s https://api.github.com/repos/youngyunxing/VirtualDisplay/releases/latest \
+                    | python3 -c "import sys,json;print(json.load(sys.stdin)['tag_name'])")
+          echo "获取到 VirtualDisplay 版本: $VERSION"
           
-          if [ -z "$DOWNLOAD_URL" ]; then
-            echo "API 获取失败，尝试备用链接..."
-            DOWNLOAD_URL="https://github.com/1fexd/vinegar/releases/download/v1.0.7/vinegar-macos-universal.zip" # 备用旧版
-          fi
+          DOWNLOAD_URL="https://github.com/youngyunxing/VirtualDisplay/releases/download/${VERSION}/VirtualDisplay.zip"
+          curl -L -o VirtualDisplay.zip "$DOWNLOAD_URL"
+          unzip -o VirtualDisplay.zip
           
-          echo "下载地址: $DOWNLOAD_URL"
-          curl -L -o vinegar.zip "$DOWNLOAD_URL"
+          # 移动到应用程序并移除隔离 (按文档说明)
+          mv VirtualDisplay.app /Applications/
+          xattr -dr com.apple.quarantine /Applications/VirtualDisplay.app
           
-          # 检查文件大小，防止再次下载到 404 的网页
-          FILE_SIZE=$(stat -f%z vinegar.zip)
-          if [ "$FILE_SIZE" -lt 10000 ]; then
-            echo "下载的文件太小 ($FILE_SIZE 字节)，可能是无效页面，退出。"
-            exit 1
-          fi
-          
-          unzip -o vinegar.zip
-          
-          # 兼容解压出的不同目录结构
-          if [ -f "Vinegar.app/Contents/MacOS/vinegar" ]; then
-            cp "Vinegar.app/Contents/MacOS/vinegar" ./vinegar
-          fi
-          chmod +x vinegar
-          ./vinegar --version || true
-
-      # 3. 启动 Vinegar (仅用于提供虚拟显示器，端口改 5901 避免冲突)
-      - name: Start Virtual Display (Vinegar)
-        run: |
-          # 密码随便给，因为我们下面用原生的 VNC 服务
-          nohup ./vinegar --port 5901 --password "dummy" > vinegar.log 2>&1 &
+          # 在后台启动应用
+          open /Applications/VirtualDisplay.app
           sleep 3
-          echo "虚拟显示器已启动 (监听在 5901)"
+          
+          # 使用内置的 vdctl 创建虚拟显示器
+          VDCTL="/Applications/VirtualDisplay.app/Contents/MacOS/vdctl"
+          
+          echo "--> 正在创建虚拟显示器..."
+          $VDCTL add display MacVNC || true
+          
+          echo "--> 正在添加 4K 预设..."
+          $VDCTL add preset MacVNC "4K" 3840 2160 60 || true
+          
+          echo "--> 正在激活 4K 预设..."
+          $VDCTL activate preset MacVNC "4K" || true
+          
+          echo "当前虚拟显示器状态:"
+          $VDCTL status || true
 
-      # 4. 使用你提供的命令，开启原生 VNC 服务并设置密码
+      # 3. 使用 kickstart 开启原生 VNC 并设置密码
       - name: Enable Native VNC (kickstart)
         env:
+          # ⚠️ 警告: macOS 原生 VNC 密码最长只支持 8 位
           VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
         run: |
+          # 截取前8位，防止密码过长导致无法验证
+          VNC_PWD_SHORT=$(echo "$VNC_PASSWORD" | cut -c1-8)
+          
           echo "正在配置 macOS 原生屏幕共享..."
-          # 补充了 -on 和 -setvncpw 用于自动开启访问并设置密码
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -activate -configure -access -on -restart -agent -privs -all -allowAccessFor -allUsers \
-            -setvnclegacy -vnclegacy yes -setvncpw -vncpw "$VNC_PASSWORD"
-          echo "原生 VNC 已启动，监听在 5900 端口"
+            -setvnclegacy -vnclegacy yes -setvncpw -vncpw "$VNC_PWD_SHORT"
+          
+          echo "原生 VNC 已成功启动！监听在 5900 端口"
 
-      # 5. 启动 bore 隧道并输出地址
+      # 4. 启动 bore 隧道并输出公网地址
       - name: Start bore tunnel
         env:
           BORE_SERVER: ${{ secrets.BORE_SERVER }}
@@ -114,12 +113,15 @@ jobs:
           fi
 
           HOST=${BORE_SERVER:-bore.pub}
-          echo "================================================"
-          echo " VNC 地址: ${HOST}:${PORT}"
-          echo " 密码:    见 secrets.VNC_PASSWORD"
-          echo "================================================"
+          echo "======================================================"
+          echo " 🎉 VNC 连接成功准备就绪！"
+          echo " 地址: ${HOST}:${PORT}"
+          echo " 密码: 你的 GitHub Secrets 中配置的 VNC_PASSWORD (取前8位)"
+          echo " ⚠️ 建议客户端选 1920x1080 HiDPI 以获得清晰画质"
+          echo "======================================================"
 
-      # 6. 保持任务运行
+      # 5. 保持任务运行，直到超时或手动取消
       - name: Keep alive
         run: |
+          echo "任务运行中... 请手动取消或等待超时。"
           sleep 21600
