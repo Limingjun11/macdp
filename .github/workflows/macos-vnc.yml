@@ -1,3 +1,4 @@
+  
 name: macOS Native VNC
 
 on:
@@ -97,12 +98,14 @@ jobs:
           
           echo "原生 VNC 已成功启动！监听在 5900 端口"
 
-      # 4. 启动 bore 隧道并输出公网地址 (修复了 set -e 导致的提前退出)
+
+    # 4. 启动 bore 隧道并输出公网地址 (终极排错版)
       - name: Start bore tunnel
         env:
           BORE_SERVER: ${{ secrets.BORE_SERVER }}
           BORE_SECRET: ${{ secrets.BORE_SECRET }}
         run: |
+          echo "正在启动 bore 隧道..."
           if [ -n "$BORE_SERVER" ]; then
             nohup ./bore local 5900 --to "$BORE_SERVER" --secret "$BORE_SECRET" > bore.log 2>&1 &
           else
@@ -110,24 +113,29 @@ jobs:
           fi
 
           PORT=""
-          for i in $(seq 1 30); do
-            PORT=$(grep -oE 'remote_port=[0-9]+' bore.log | head -1 | cut -d= -f2)
-            if [ -z "$PORT" ]; then
-              PORT=$(grep -oE 'listening at [^ ]*:[0-9]+' bore.log | head -1 | grep -oE '[0-9]+$')
+          for i in $(seq 1 15); do
+            # 检查 bore 进程是否挂了
+            if ! kill -0 $! 2>/dev/null; then
+              echo "❌ bore 进程意外退出！"
+              cat bore.log
+              exit 1
             fi
             
-            # 使用 if 语句，防止 set -e 导致脚本异常退出
+            # 使用更宽松的正则提取端口
+            PORT=$(grep -oE ':[0-9]{4,5}' bore.log | tail -1 | cut -c 2-)
             if [ -n "$PORT" ]; then
               break
             fi
             sleep 1
           done
 
+          # 不管成没成功，都把日志打印出来，方便排查！
+          echo "========== bore 运行日志 =========="
+          cat bore.log
+          echo "==================================="
+
           if [ -z "$PORT" ]; then
-            echo "❌ 隧道连接失败，无法获取公网端口！"
-            echo "===== bore.log 日志如下 ====="
-            cat bore.log
-            echo "============================="
+            echo "❌ 未能从日志中解析出端口号，隧道连接失败！"
             exit 1
           fi
 
@@ -136,7 +144,6 @@ jobs:
           echo " 🎉 VNC 连接成功准备就绪！"
           echo " 地址: ${HOST}:${PORT}"
           echo " 密码: 你的 GitHub Secrets 中配置的 VNC_PASSWORD (取前8位)"
-          echo " ⚠️ 建议客户端选 1920x1080 HiDPI 以获得清晰画质"
           echo "======================================================"
 
       # 5. 保持任务运行
