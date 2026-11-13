@@ -103,7 +103,7 @@ jobs:
           BORE_SERVER: ${{ secrets.BORE_SERVER }}
           BORE_SECRET: ${{ secrets.BORE_SECRET }}
         run: |
-          set -e
+          # 启动 bore 隧道
           if [ -n "$BORE_SERVER" ]; then
             nohup ./bore local 5900 --to "$BORE_SERVER" --secret "$BORE_SECRET" > bore.log 2>&1 &
           else
@@ -116,12 +116,20 @@ jobs:
             if [ -z "$PORT" ]; then
               PORT=$(grep -oE 'listening at [^ ]*:[0-9]+' bore.log | head -1 | grep -oE '[0-9]+$')
             fi
-            [ -n "$PORT" ] && break
+            
+            # 使用 if 语句代替 && 避免 set -e 导致脚本提前退出
+            if [ -n "$PORT" ]; then
+              break
+            fi
             sleep 1
           done
 
           if [ -z "$PORT" ]; then
-            echo "===== bore.log ====="; cat bore.log; exit 1
+            echo "❌ 隧道连接失败，无法获取公网端口！"
+            echo "===== bore.log 日志如下 ====="
+            cat bore.log
+            echo "============================="
+            exit 1
           fi
 
           HOST=${BORE_SERVER:-bore.pub}
@@ -132,6 +140,7 @@ jobs:
           echo " ⚠️ 建议客户端选 1920x1080 HiDPI 以获得清晰画质"
           echo "======================================================"
 
+          
       # 5. 保持任务运行
       - name: Keep alive
         run: |
