@@ -17,6 +17,7 @@ jobs:
           sw_vers
           uname -m
 
+      # 1. 安装 bore
       - name: Install bore
         run: |
           set -e
@@ -32,16 +33,60 @@ jobs:
           tar xzf bore.tar.gz
           chmod +x bore
           xattr -d com.apple.quarantine bore 2>/dev/null || true
-          ./bore --version
 
+      # 2. 动态获取真实链接下载 Vinegar (修复 404 问题)
       - name: Download Vinegar
         run: |
-          curl -L -o vinegar.zip \
-            https://github.com/1fexd/vinegar/releases/latest/download/vinegar-macos-universal.zip
+          set -e
+          # 通过 GitHub API 动态抓取最新的 macOS 下载链接
+          API_URL="https://api.github.com/repos/1fexd/vinegar/releases/latest"
+          DOWNLOAD_URL=$(curl -s $API_URL | grep browser_download_url | grep -i "macos.*\.zip" | head -n 1 | cut -d '"' -f 4)
+          
+          if [ -z "$DOWNLOAD_URL" ]; then
+            echo "API 获取失败，尝试备用链接..."
+            DOWNLOAD_URL="https://github.com/1fexd/vinegar/releases/download/v1.0.7/vinegar-macos-universal.zip" # 备用旧版
+          fi
+          
+          echo "下载地址: $DOWNLOAD_URL"
+          curl -L -o vinegar.zip "$DOWNLOAD_URL"
+          
+          # 检查文件大小，防止再次下载到 404 的网页
+          FILE_SIZE=$(stat -f%z vinegar.zip)
+          if [ "$FILE_SIZE" -lt 10000 ]; then
+            echo "下载的文件太小 ($FILE_SIZE 字节)，可能是无效页面，退出。"
+            exit 1
+          fi
+          
           unzip -o vinegar.zip
+          
+          # 兼容解压出的不同目录结构
+          if [ -f "Vinegar.app/Contents/MacOS/vinegar" ]; then
+            cp "Vinegar.app/Contents/MacOS/vinegar" ./vinegar
+          fi
           chmod +x vinegar
-          ./vinegar --help || true
+          ./vinegar --version || true
 
+      # 3. 启动 Vinegar (仅用于提供虚拟显示器，端口改 5901 避免冲突)
+      - name: Start Virtual Display (Vinegar)
+        run: |
+          # 密码随便给，因为我们下面用原生的 VNC 服务
+          nohup ./vinegar --port 5901 --password "dummy" > vinegar.log 2>&1 &
+          sleep 3
+          echo "虚拟显示器已启动 (监听在 5901)"
+
+      # 4. 使用你提供的命令，开启原生 VNC 服务并设置密码
+      - name: Enable Native VNC (kickstart)
+        env:
+          VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
+        run: |
+          echo "正在配置 macOS 原生屏幕共享..."
+          # 补充了 -on 和 -setvncpw 用于自动开启访问并设置密码
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -activate -configure -access -on -restart -agent -privs -all -allowAccessFor -allUsers \
+            -setvnclegacy -vnclegacy yes -setvncpw -vncpw "$VNC_PASSWORD"
+          echo "原生 VNC 已启动，监听在 5900 端口"
+
+      # 5. 启动 bore 隧道并输出地址
       - name: Start bore tunnel
         env:
           BORE_SERVER: ${{ secrets.BORE_SERVER }}
@@ -49,8 +94,7 @@ jobs:
         run: |
           set -e
           if [ -n "$BORE_SERVER" ]; then
-            nohup ./bore local 5900 --to "$BORE_SERVER" --secret "$BORE_SECRET" \
-              > bore.log 2>&1 &
+            nohup ./bore local 5900 --to "$BORE_SERVER" --secret "$BORE_SECRET" > bore.log 2>&1 &
           else
             nohup ./bore local 5900 --to bore.pub > bore.log 2>&1 &
           fi
@@ -72,10 +116,10 @@ jobs:
           HOST=${BORE_SERVER:-bore.pub}
           echo "================================================"
           echo " VNC 地址: ${HOST}:${PORT}"
+          echo " 密码:    见 secrets.VNC_PASSWORD"
           echo "================================================"
 
-      - name: Run VNC server
-        env:
-          VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
+      # 6. 保持任务运行
+      - name: Keep alive
         run: |
-          ./vinegar --password "$VNC_PASSWORD" --port 5900
+          sleep 21600
