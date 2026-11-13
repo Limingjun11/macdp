@@ -1,0 +1,86 @@
+name: macOS VNC
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "运行分钟数（最大 350）"
+        default: "60"
+
+jobs:
+  vnc:
+    runs-on: macos-14
+    timeout-minutes: ${{ fromJSON(github.event.inputs.duration || '60') }}
+    steps:
+      - name: Runner 信息
+        run: |
+          sw_vers
+          uname -m
+
+      # ---------- 1. 下载 bore（Apple Silicon 二进制） ----------
+      - name: Install bore
+        run: |
+          set -e
+          VERSION=$(curl -s https://api.github.com/repos/ekzhang/bore/releases/latest \
+                    | python3 -c "import sys,json;print(json.load(sys.stdin)['tag_name'])")
+          echo "bore $VERSION"
+          curl -L -o bore.tar.gz \
+            "https://github.com/ekzhang/bore/releases/download/${VERSION}/bore-${VERSION}-aarch64-apple-darwin.tar.gz"
+          tar xzf bore.tar.gz
+          chmod +x bore
+          xattr -d com.apple.quarantine bore 2>/dev/null || true
+          ./bore --version
+
+      # ---------- 2. 下载 Vinegar ----------
+      - name: Download Vinegar
+        run: |
+          curl -L -o vinegar.zip \
+            https://github.com/1fexd/vinegar/releases/latest/download/vinegar-macos-universal.zip
+          unzip -o vinegar.zip
+          chmod +x vinegar
+          ./vinegar --help || true
+
+      # ---------- 3. 启动 bore 并解析公网端口 ----------
+      - name: Start bore tunnel
+        env:
+          BORE_SERVER: ${{ secrets.BORE_SERVER }}     # 自建时填，如 vnc.example.com
+          BORE_SECRET: ${{ secrets.BORE_SECRET }}     # 自建时的 --secret
+        run: |
+          set -e
+          if [ -n "$BORE_SERVER" ]; then
+            echo "使用自建服务端 $BORE_SERVER"
+            nohup ./bore local 5900 --to "$BORE_SERVER" --secret "$BORE_SECRET" \
+              > bore.log 2>&1 &
+          else
+            echo "使用公共服务器 bore.pub"
+            nohup ./bore local 5900 --to bore.pub > bore.log 2>&1 &
+          fi
+
+          PORT=""
+          for i in $(seq 1 30); do
+            PORT=$(grep -oE 'remote_port=[0-9]+' bore.log | head -1 | cut -d= -f2)
+            if [ -z "$PORT" ]; then
+              PORT=$(grep -oE 'listening at [^ ]*:[0-9]+' bore.log | head -1 | grep -oE '[0-9]+$')
+            fi
+            [ -n "$PORT" ] && break
+            sleep 1
+          done
+
+          if [ -z "$PORT" ]; then
+            echo "===== bore.log ====="; cat bore.log; exit 1
+          fi
+
+          HOST=${BORE_SERVER:-bore.pub}
+          echo "================================================"
+          echo " VNC 地址: ${HOST}:${PORT}"
+          echo " 密码:    见 secrets.VNC_PASSWORD"
+          echo "================================================"
+          echo "$HOST:$PORT" > vnc-addr.txt
+
+      # ---------- 4. 前台跑 VNC ----------
+      - name: Run VNC server
+        env:
+          VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
+        run: |
+          ./vinegar --password "$VNC_PASSWORD" --port 5900
+          # 若 --help 显示参数名不同，按日志调整
